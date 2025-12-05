@@ -1,0 +1,201 @@
+@startuml
+'https://plantuml.com/sequence-diagram
+
+title Sequence Diagram - React Frontend Application Flow
+
+autonumber
+
+actor User
+participant "App.tsx" as App
+participant "Home.tsx" as Home
+participant "room.ts" as RoomHandler
+participant "WebSocket" as WS
+participant "Backend Server" as Server
+participant "Map.tsx" as Map
+participant "Navbar.tsx" as Navbar
+
+== Application Initialization ==
+
+User -> App: Load application
+activate App
+
+App -> App: Check URL params for room ID
+App -> App: Initialize WebSocket ref
+App -> App: Create room handler context
+App -> App: Generate unique client ID
+
+== WebSocket Connection Setup ==
+
+App -> WS: Create WebSocket('ws://localhost:8765')
+activate WS
+
+App -> RoomHandler: attachRoomSocketHandlers(ws, context)
+activate RoomHandler
+RoomHandler -> RoomHandler: Set up onmessage handler
+RoomHandler -> RoomHandler: Set up onerror handler
+RoomHandler -> RoomHandler: Set up onclose handler
+
+WS -> Server: WebSocket connection request
+activate Server
+Server --> WS: Connection established
+WS --> App: onopen event
+
+== Room Creation/Joining Flow ==
+
+alt URL has room parameter
+    App -> App: Set roomModeRef to 'join'
+    App -> App: Set joinRoomIdRef
+    WS -> Server: Send {"action": "join", "room": roomId, "token": "..."}
+    Server --> WS: {"type": "joined", "room": roomId}
+else User clicks "Create Room"
+    App -> Home: Render Home component
+    activate Home
+    User -> Home: Click "Create New Room"
+    Home -> RoomHandler: handleCreateRoom(context)
+    RoomHandler -> RoomHandler: Set roomModeRef to 'create'
+    RoomHandler -> WS: Send {"action": "create", "token": "..."}
+    WS -> Server: Forward create message
+    Server --> WS: {"type": "room_created", "room": roomId}
+else User enters room ID and clicks "Join"
+    App -> Home: Render Home component
+    User -> Home: Enter room ID and click "Join Room"
+    Home -> RoomHandler: handleJoinRoom(context, roomId)
+    RoomHandler -> RoomHandler: Validate room ID
+    RoomHandler -> WS: Send {"action": "join", "room": roomId, "token": "..."}
+    WS -> Server: Forward join message
+    Server --> WS: {"type": "joined", "room": roomId}
+end
+
+WS --> RoomHandler: onmessage: room_created/joined
+RoomHandler -> App: setRoomId(roomId)
+RoomHandler -> App: setIsRoomConnected(true)
+RoomHandler -> App: setIsHost(true/false)
+RoomHandler -> App: Update URL with room ID
+App -> App: isRoomConnected = true
+App -> App: Render Map component instead of Home
+deactivate Home
+
+== Game World Generation ==
+
+User -> App: Enter world prompt and submit
+App -> App: Validate isHost and prompt length
+App -> WS: Send {"action": "create_game", "setting": prompt}
+WS -> Server: Forward create_game message
+Server -> Server: Generate game description using Gemini AI
+Server --> WS: {"type": "game_created", "setting": prompt, "description": "..."}
+WS --> RoomHandler: onmessage: game_created
+RoomHandler -> App: setGameStatusMessage(description)
+RoomHandler -> App: setWorldPrompt('')
+RoomHandler -> App: setGameSetting(setting)
+App -> App: Format markdown to HTML
+App -> App: Display game description
+
+== Character Creation ==
+
+User -> Map: Click "Create randomized character"
+Map -> App: onRequestCharacterCreation()
+App -> WS: Send {"action": "create_character", "clientId": clientId}
+WS -> Server: Forward create_character message
+Server -> Server: Generate character JSON using Gemini AI
+Server --> WS: {"type": "character_created", "character": {...}}
+WS --> RoomHandler: onmessage: character_created
+RoomHandler -> RoomHandler: Validate clientId matches
+RoomHandler -> App: setCharacterCreated(true)
+RoomHandler -> App: setHp(character.hp)
+RoomHandler -> App: setMaxHp(character.maxHp)
+RoomHandler -> App: setAc(character.ac)
+RoomHandler -> App: setCharacterPortrait(character.portrait)
+RoomHandler -> App: setStats(character.stats)
+RoomHandler -> App: setAbilities(character.abilities)
+RoomHandler -> App: setInventory(character.inventory)
+RoomHandler -> App: setCharDescription(character.charDescription)
+RoomHandler -> App: setRace(character.race)
+RoomHandler -> App: setTraits(character.traits)
+App -> Map: Update character props
+Map -> Map: Display character HUD
+
+== Mouse Coordinate Tracking ==
+
+User -> Map: Move mouse (while pressed) on map board
+Map -> Map: Check if within map bounds
+Map -> Map: Throttle coordinate sending (100ms)
+Map -> WS: Send {"clientId": id, "x": x, "y": y, "timestamp": ts}
+WS -> Server: Forward mouse coordinates
+Server -> Server: Broadcast to all clients in room
+Server --> WS: Broadcast coordinates to other clients
+WS --> RoomHandler: onmessage: coordinate data
+RoomHandler -> RoomHandler: Check if message has clientId, x, y
+RoomHandler -> App: setClientCoordinates(update map)
+App -> Map: Update clientCoordinates prop
+Map -> Map: Convert screen coords to board positions
+Map -> Map: Render pieces on board
+
+== Piece Movement (Drag & Drop) ==
+
+User -> Map: Drag own piece to new position
+Map -> Map: handleDragEnd(event)
+Map -> Map: Check if attack is selected (prevent movement)
+Map -> Map: Convert board position to screen coordinates
+Map -> WS: Send {"clientId": id, "x": x, "y": y, "timestamp": ts}
+WS -> Server: Forward new position
+Server -> Server: Broadcast to all clients
+Server --> WS: Broadcast coordinates
+WS --> RoomHandler: onmessage: coordinate update
+RoomHandler -> App: setClientCoordinates(update)
+App -> Map: Update board positions
+Map -> Map: Render piece at new position
+
+== Attack System ==
+
+User -> Map: Select ability from HUD
+Map -> Map: handleAbilitySelect(ability, type)
+Map -> Map: setSelectedAbility(ability)
+Map -> Map: Calculate range squares
+Map -> Map: Highlight range squares on board
+Map -> App: setIsAttacking(true)
+
+User -> Map: Click target piece in range
+Map -> Map: handlePieceSelect(targetClientId)
+Map -> Map: Check if target is in range
+Map -> Map: Roll d20 for attack
+Map -> Map: Calculate hit/miss
+Map -> WS: Send {"type": "attack", "attacker": id, "target": targetId, "damage": dmg, "roll": roll}
+WS -> Server: Forward attack message
+Map -> Map: Display dice roll result
+Map -> Map: Reset selection after 3 seconds
+Map -> App: setIsAttacking(false)
+
+== Error Handling ==
+
+alt WebSocket Error
+    WS --> RoomHandler: onerror event
+    RoomHandler -> App: setErrorMessage("WebSocket Error")
+    RoomHandler -> App: setIsRoomConnected(false)
+    App -> Home: Render Home component (disconnected)
+end
+
+alt Invalid Room/Token
+    Server --> WS: {"error": "Room does not exist"}
+    WS --> RoomHandler: onmessage: error
+    RoomHandler -> App: setErrorMessage("Room does not exist")
+    RoomHandler -> App: setIsRoomConnected(false)
+    App -> Home: Render Home component
+end
+
+== Cleanup ==
+
+User -> App: Close browser/leave page
+App -> App: Cleanup timeout
+App -> WS: Close WebSocket connection
+WS -> Server: Close connection
+Server -> Server: Remove client from room
+Server -> Server: Delete room if empty
+
+deactivate Server
+deactivate WS
+deactivate RoomHandler
+deactivate App
+
+@enduml
+
+
