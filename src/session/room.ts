@@ -1,6 +1,11 @@
 import type { MutableRefObject, Dispatch, SetStateAction } from 'react'
 
-import type { MouseCoordinates, WebSocketMessage } from './types'
+import type {
+  MouseCoordinates,
+  WebSocketMessage,
+  WorldState,
+  MoveRejectReason,
+} from './types'
 
 const DEFAULT_WEBSOCKET_URL = 'ws://localhost:8765/'
 const DEFAULT_TOKEN = 'optional-secret'
@@ -29,6 +34,8 @@ export interface RoomSocketHandlersContext {
   setRace?: Dispatch<SetStateAction<string | null>>
   setTraits?: Dispatch<SetStateAction<import('./types').CharacterTrait[]>>
   setIsAttacking?: Dispatch<SetStateAction<boolean>>
+  setWorldState?: Dispatch<SetStateAction<WorldState | null>>
+  setMoveRejection?: Dispatch<SetStateAction<MoveRejectReason | null>>
 }
 
 export interface RoomHandlerContext extends RoomSocketHandlersContext {
@@ -70,6 +77,8 @@ export function attachRoomSocketHandlers(
     setRace,
     setTraits,
     setIsAttacking,
+    setWorldState,
+    setMoveRejection,
     clientIdRef,
   } = context
 
@@ -79,7 +88,25 @@ export function attachRoomSocketHandlers(
       const data: WebSocketMessage = JSON.parse(event.data)
       console.log('Parsed message data:', data)
 
-      if (data.type === 'room_created') {
+      if (data.type === 'world_state') {
+        if (setWorldState && Array.isArray(data.tiles) && data.viewport && data.world_size) {
+          setWorldState({
+            tiles: data.tiles,
+            viewport: data.viewport,
+            worldSize: data.world_size,
+            playerPositions: data.player_positions ?? {},
+          })
+        }
+        return
+      } else if (data.type === 'move_rejected') {
+        if (setMoveRejection) {
+          setMoveRejection(data.reason ?? null)
+        }
+        return
+      } else if (data.type === 'player_joined' || data.type === 'player_left') {
+        // World state will arrive immediately after; nothing else to do here.
+        return
+      } else if (data.type === 'room_created') {
         console.log('Room created:', data.room)
         setRoomId(data.room ?? null)
         setIsRoomConnected(true)
@@ -312,6 +339,7 @@ export function handleCreateRoom(
   const {
     websocketRef,
     roomModeRef,
+    clientIdRef,
     setErrorMessage,
   } = context
 
@@ -321,6 +349,13 @@ export function handleCreateRoom(
   const ws = websocketRef.current
   const websocketUrl = options.websocketUrl ?? DEFAULT_WEBSOCKET_URL
   const token = options.token ?? DEFAULT_TOKEN
+  const clientId = clientIdRef?.current
+
+  const createPayload = JSON.stringify({
+    action: 'create',
+    token,
+    clientId,
+  })
 
   if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
     const newWs = new WebSocket(websocketUrl)
@@ -330,10 +365,7 @@ export function handleCreateRoom(
 
     newWs.onopen = () => {
       console.log('Connected')
-      newWs.send(JSON.stringify({
-        action: 'create',
-        token,
-      }))
+      newWs.send(createPayload)
     }
 
     return
@@ -341,10 +373,7 @@ export function handleCreateRoom(
 
   if (ws.readyState === WebSocket.OPEN) {
     console.log('Sending create room message')
-    ws.send(JSON.stringify({
-      action: 'create',
-      token,
-    }))
+    ws.send(createPayload)
   } else if (ws.readyState === WebSocket.CONNECTING) {
     console.log('WebSocket is connecting, will send on open')
   }
@@ -359,6 +388,7 @@ export function handleJoinRoom(
     websocketRef,
     roomModeRef,
     joinRoomIdRef,
+    clientIdRef,
     setErrorMessage,
   } = context
 
@@ -375,6 +405,14 @@ export function handleJoinRoom(
   const ws = websocketRef.current
   const websocketUrl = options.websocketUrl ?? DEFAULT_WEBSOCKET_URL
   const token = options.token ?? DEFAULT_TOKEN
+  const clientId = clientIdRef?.current
+
+  const joinPayload = JSON.stringify({
+    action: 'join',
+    room: trimmedRoomId,
+    token,
+    clientId,
+  })
 
   if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
     const newWs = new WebSocket(websocketUrl)
@@ -384,11 +422,7 @@ export function handleJoinRoom(
 
     newWs.onopen = () => {
       console.log('Connected')
-      newWs.send(JSON.stringify({
-        action: 'join',
-        room: trimmedRoomId,
-        token,
-      }))
+      newWs.send(joinPayload)
     }
 
     return
@@ -396,11 +430,7 @@ export function handleJoinRoom(
 
   if (ws.readyState === WebSocket.OPEN) {
     console.log('Sending join room message')
-    ws.send(JSON.stringify({
-      action: 'join',
-      room: trimmedRoomId,
-      token,
-    }))
+    ws.send(joinPayload)
   } else if (ws.readyState === WebSocket.CONNECTING) {
     console.log('WebSocket is connecting, will send on open')
   }

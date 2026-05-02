@@ -50,6 +50,54 @@ export interface CharacterData {
   inventory?: InventoryItem[];
 }
 
+export type TileType = 'grass' | 'forest' | 'water' | 'mountain' | 'building' | string;
+export type DoorSide = 'top' | 'bottom' | 'left' | 'right' | null;
+
+export interface WorldTile {
+  id: string;
+  type: TileType;
+  door: DoorSide;
+  rel_x: number;
+  rel_y: number;
+  world_x: number;
+  world_y: number;
+}
+
+export interface Viewport {
+  start_x: number;
+  start_y: number;
+  size: number;
+}
+
+export interface WorldSize {
+  width: number;
+  height: number;
+}
+
+export interface PlayerPosition {
+  x: number;
+  y: number;
+}
+
+export type PlayerPositions = Record<string, PlayerPosition>;
+
+export interface WorldState {
+  tiles: WorldTile[];
+  viewport: Viewport;
+  worldSize: WorldSize;
+  playerPositions: PlayerPositions;
+}
+
+export type MoveDirection = 'up' | 'down' | 'left' | 'right';
+
+export type MoveRejectReason =
+  | 'invalid_direction'
+  | 'out_of_bounds'
+  | 'impassable'
+  | 'too_far'
+  | 'occupied'
+  | 'leash';
+
 export interface WebSocketMessage {
   type?: string;
   room?: string;
@@ -79,5 +127,12 @@ export interface WebSocketMessage {
   };
   // Character creation response
   character?: CharacterData;
+  // Telescopic camera / viewport messages
+  tiles?: WorldTile[];
+  viewport?: Viewport;
+  world_size?: WorldSize;
+  player_positions?: PlayerPositions;
+  spawn?: PlayerPosition;
+  reason?: MoveRejectReason;
 }
 

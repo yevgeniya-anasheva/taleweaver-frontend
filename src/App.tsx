@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent } from 'react'
 import { useForm } from 'react-hook-form'
-import type { MouseCoordinates, CharacterAbilities, InventoryItem, CharacterTrait } from './session/types'
+import type {
+  MouseCoordinates,
+  CharacterAbilities,
+  InventoryItem,
+  CharacterTrait,
+  WorldState,
+  MoveRejectReason,
+  MoveDirection,
+  PlayerPosition,
+} from './session/types'
 import { attachRoomSocketHandlers } from './session/room'
 import type { RoomHandlerContext } from './session/room'
 import { convertMarkdownToHtml } from './utils/formatting'
@@ -36,12 +45,11 @@ interface GameState {
   race: string | null
   traits: CharacterTrait[]
   isAttacking: boolean
+  worldState: WorldState | null
+  moveRejection: MoveRejectReason | null
 }
 
 function App() {
-  const lastSentRef = useRef<number>(0);
-  const isMousePressedRef = useRef<boolean>(false);
-  const throttleDelay = 100; // Send coordinates at most every 100ms
   const MIN_WORLD_PROMPT_LENGTH = 5;
 
   // Use React Hook Form for form inputs
@@ -79,6 +87,8 @@ function App() {
     race: null,
     traits: [],
     isAttacking: false,
+    worldState: null,
+    moveRejection: null,
   });
 
   // Helper function to update game state
@@ -138,6 +148,8 @@ function App() {
     setRace: (value) => updateGameState({ race: typeof value === 'function' ? value(gameState.race) : value }),
     setTraits: (value) => updateGameState({ traits: typeof value === 'function' ? value(gameState.traits) : value }),
     setIsAttacking: (value) => updateGameState({ isAttacking: typeof value === 'function' ? value(gameState.isAttacking) : value }),
+    setWorldState: (value) => updateGameState({ worldState: typeof value === 'function' ? value(gameState.worldState) : value }),
+    setMoveRejection: (value) => updateGameState({ moveRejection: typeof value === 'function' ? value(gameState.moveRejection) : value }),
   });
 
   const roomHandlerContext = getRoomHandlerContext();
@@ -179,12 +191,14 @@ function App() {
           ws.send(JSON.stringify({
             action: "join",
             room: joinRoomIdRef.current,
-            token: "optional-secret"
+            token: "optional-secret",
+            clientId: clientIdRef.current,
           }));
         } else if (roomModeRef.current === 'create') {
           ws.send(JSON.stringify({
             action: "create",
-            token: "optional-secret"
+            token: "optional-secret",
+            clientId: clientIdRef.current,
           }));
         }
       };
@@ -215,126 +229,26 @@ function App() {
   }, []);
 
 
-  useEffect(() => {
-    // Only set up mouse listeners if room is connected
-    if (!gameState.isRoomConnected) {
+  // Send a movement intent to the server (telescopic camera input).
+  // Either provide a cardinal direction or an absolute world target.
+  const sendMove = (
+    move: { direction: MoveDirection } | { target: PlayerPosition },
+  ) => {
+    const ws = websocketRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !gameState.isRoomConnected) {
       return;
     }
-
-    // Helper function to check if coordinates are within map board bounds
-    const isWithinMapBounds = (x: number, y: number, event?: MouseEvent): boolean => {
-      // If event is provided, check if the target is a UI element (button, input, etc.)
-      if (event) {
-        const target = event.target as HTMLElement;
-        // Don't track if clicking on interactive UI elements outside the board
-        if (target.tagName === 'BUTTON' || 
-            target.tagName === 'INPUT' || 
-            target.tagName === 'TEXTAREA' ||
-            target.closest('button') ||
-            target.closest('input') ||
-            target.closest('textarea')) {
-          // Check if this UI element is inside the map board
-          const boardElement = document.querySelector('[data-map-board]') as HTMLElement;
-          if (!boardElement || !boardElement.contains(target)) {
-            return false;
-          }
-        }
-      }
-      
-      // Find the map board element
-      const boardElement = document.querySelector('[data-map-board]') as HTMLElement;
-      if (!boardElement) {
-        return false;
-      }
-      
-      const rect = boardElement.getBoundingClientRect();
-      return (
-        x >= rect.left &&
-        x <= rect.right &&
-        y >= rect.top &&
-        y <= rect.bottom
-      );
-    };
-
-    // Helper function to send mouse coordinates
-    const sendMouseCoordinates = (event: MouseEvent, bypassThrottle: boolean = false) => {
-      // Only send if room is connected
-      if (!gameState.isRoomConnected) {
-        return;
-      }
-
-      // Don't send coordinates if an attack is selected
-      if (gameState.isAttacking) {
-        return;
-      }
-
-      // Only send coordinates if mouse is within map board bounds
-      if (!isWithinMapBounds(event.clientX, event.clientY, event)) {
-        return;
-      }
-
-      const now = Date.now();
-      
-      // Throttle the sending to avoid too many messages (unless bypassing for clicks)
-      if (!bypassThrottle && now - lastSentRef.current < throttleDelay) {
-        return;
-      }
-
-      const mouseData = {
+    if (gameState.isAttacking) {
+      return; // Movement is locked while an attack is being aimed
+    }
+    ws.send(
+      JSON.stringify({
+        action: 'move',
         clientId: clientIdRef.current,
-        x: event.clientX,
-        y: event.clientY,
-        timestamp: now
-      };
-
-      // Only send if WebSocket is open and room is connected
-      const ws = websocketRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN && gameState.isRoomConnected) {
-        ws.send(JSON.stringify(mouseData));
-        lastSentRef.current = now;
-      }
-    };
-
-    // Mouse move handler - only send when mouse button is pressed
-    const handleMouseMove = (event: MouseEvent) => {
-      // Only send coordinates if mouse button is pressed
-      if (!isMousePressedRef.current) {
-        return;
-      }
-
-      sendMouseCoordinates(event, false);
-    };
-
-    // Mouse down handler - send coordinates immediately on every click (bypass throttle)
-    const handleMouseDown = (event: MouseEvent) => {
-      // Only track if within map bounds and not clicking on UI elements
-      if (!isWithinMapBounds(event.clientX, event.clientY, event)) {
-        isMousePressedRef.current = false;
-        return;
-      }
-      
-      isMousePressedRef.current = true;
-      // Send coordinates immediately when mouse is clicked (bypass throttle to ensure it sends)
-      sendMouseCoordinates(event, true);
-    };
-
-    // Mouse up handler - clear flag when mouse button is released
-    const handleMouseUp = () => {
-      isMousePressedRef.current = false;
-    };
-
-    // Add event listeners
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mousedown', handleMouseDown);
-    window.addEventListener('mouseup', handleMouseUp);
-
-    // Cleanup function
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mousedown', handleMouseDown);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [gameState.isRoomConnected, gameState.isAttacking]);
+        ...move,
+      }),
+    );
+  };
 
   const requestNewGame = (setting: string) => {
     const ws = websocketRef.current;
@@ -432,6 +346,10 @@ function App() {
         charDescription={gameState.charDescription}
         race={gameState.race}
         traits={gameState.traits}
+        worldState={gameState.worldState}
+        moveRejection={gameState.moveRejection}
+        onMove={sendMove}
+        onClearMoveRejection={() => updateGameState({ moveRejection: null })}
         onRequestCharacterCreation={requestCharacterCreation}
         onAttackStateChange={(value) => updateGameState({ isAttacking: value })}
       />
